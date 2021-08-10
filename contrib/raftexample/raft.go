@@ -15,7 +15,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"fmt"
 	"log"
 	"net/http"
@@ -42,6 +44,7 @@ type raftNode struct {
 	proposeC    <-chan string            // proposed messages (k,v)
 	confChangeC <-chan raftpb.ConfChange // proposed cluster config changes
 	commitC     chan<- *string           // entries committed to log (k,v)
+	notifyC     chan<- *string           // entries committed to log (k,v)
 	errorC      chan<- error             // errors from raft session
 
 	id          int      // client ID for raft session
@@ -79,15 +82,17 @@ var defaultSnapshotCount uint64 = 10000
 // commit channel, followed by a nil message (to indicate the channel is
 // current), then new log entries. To shutdown, close proposeC and read errorC.
 func newRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, error), proposeC <-chan string,
-	confChangeC <-chan raftpb.ConfChange) (<-chan *string, <-chan error, <-chan *snap.Snapshotter) {
+	confChangeC <-chan raftpb.ConfChange) (<-chan *string, <-chan *string, <-chan error, <-chan *snap.Snapshotter) {
 
 	commitC := make(chan *string)
+	notifyC := make(chan *string)
 	errorC := make(chan error)
 
 	rc := &raftNode{
 		proposeC:    proposeC,
 		confChangeC: confChangeC,
 		commitC:     commitC,
+		notifyC:     notifyC,
 		errorC:      errorC,
 		id:          id,
 		peers:       peers,
@@ -104,7 +109,7 @@ func newRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, 
 		// rest of structure populated after WAL replay
 	}
 	go rc.startRaft()
-	return commitC, errorC, rc.snapshotterReady
+	return commitC, notifyC, errorC, rc.snapshotterReady
 }
 
 func (rc *raftNode) saveSnap(snap raftpb.Snapshot) error {
@@ -151,6 +156,14 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 			s := string(ents[i].Data)
 			select {
 			case rc.commitC <- &s:
+				var dataKv kv
+				dec := gob.NewDecoder(bytes.NewBufferString(s))
+				if err := dec.Decode(&dataKv); err != nil {
+					panic(err)
+				}
+				if dataKv.Key == HeartbeatKey {
+					go func() { rc.notifyC <- &dataKv.Val }()
+				}
 			case <-rc.stopc:
 				return false
 			}
@@ -294,7 +307,8 @@ func (rc *raftNode) startRaft() {
 	}
 
 	rc.transport = &rafthttp.Transport{
-		Logger:      zap.NewExample(),
+		// Logger:      zap.NewExample(),
+		Logger:      nil,
 		ID:          types.ID(rc.id),
 		ClusterID:   0x1000,
 		Raft:        rc,

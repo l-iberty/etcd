@@ -1,0 +1,10 @@
+#!/bin/sh
+
+while true
+do
+	curl -L http://127.0.0.1:12380/heartbeat -XPUT -d '{"SlaveId":1,"SlaveHost":"http://10.0.0.1","FileStores":[{"GroupId":1,"PeerId":100,"Path":"/xxx"},{"GroupId":2,"PeerId":101,"Path":"/yyy"}]}'
+	curl -L http://127.0.0.1:12380/heartbeat -XPUT -d '{"SlaveId":2,"SlaveHost":"http://10.0.0.2","FileStores":[{"GroupId":1,"PeerId":100,"Path":"/xxx"},{"GroupId":2,"PeerId":101,"Path":"/yyy"}]}'
+	curl -L http://127.0.0.1:12380/heartbeat -XPUT -d '{"SlaveId":3,"SlaveHost":"http://10.0.0.3","FileStores":[{"GroupId":1,"PeerId":100,"Path":"/xxx"},{"GroupId":2,"PeerId":101,"Path":"/yyy"}]}'
+
+	sleep 3
+done

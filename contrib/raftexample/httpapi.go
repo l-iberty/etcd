@@ -15,12 +15,11 @@
 package main
 
 import (
+	"go.etcd.io/etcd/raft/raftpb"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"strconv"
-
-	"go.etcd.io/etcd/raft/raftpb"
 )
 
 // Handler for a http based key-value store backed by raft
