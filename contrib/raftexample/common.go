@@ -6,9 +6,11 @@ import (
 )
 
 type heartbeatPackage struct {
-	SlaveId    int
-	SlaveHost  string
-	FileStores []FileStore
+	SlaveId      int
+	SlaveHost    string
+	SlavePort    int
+	SlaveCmdPort int
+	FileStores   []FileStore
 }
 
 type FileStore struct {
