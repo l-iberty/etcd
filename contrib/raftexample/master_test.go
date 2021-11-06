@@ -43,7 +43,7 @@ func TestSlaveHeartbeatNoTimeout(t *testing.T) {
 	notifyC := make(chan *string)
 	var mu sync.Mutex
 	timeout_ids := make(map[int]struct{})
-	m := newMaster(1234, notifyC, stopC, func(id int) {
+	m := newMaster(nil, 1234, notifyC, stopC, func(id int) {
 		mu.Lock()
 		defer mu.Unlock()
 		timeout_ids[id] = struct{}{}
@@ -63,7 +63,7 @@ func TestSlaveHeartbeatNoTimeout(t *testing.T) {
 	go func() {
 		for {
 			select {
-			case <-time.After(HeartbeatTimeout/2):
+			case <-time.After(HeartbeatTimeout / 2):
 				if time.Since(start) > 10*time.Second {
 					wg.Done()
 					return
@@ -102,7 +102,7 @@ func TestSlaveHeartbeatTimeout(t *testing.T) {
 	notifyC := make(chan *string)
 	var mu sync.Mutex
 	timeout_ids := make(map[int]struct{})
-	m := newMaster(1234, notifyC, stopC, func(id int) {
+	m := newMaster(nil, 1234, notifyC, stopC, func(id int) {
 		mu.Lock()
 		defer mu.Unlock()
 		timeout_ids[id] = struct{}{}
@@ -123,7 +123,7 @@ func TestSlaveHeartbeatTimeout(t *testing.T) {
 	go func() {
 		for {
 			select {
-			case <-time.After(HeartbeatTimeout/2):
+			case <-time.After(HeartbeatTimeout / 2):
 				if time.Since(start) > 30*time.Second {
 					wg.Done()
 					return
@@ -182,7 +182,7 @@ func TestSlaveHeartbeatTimeout(t *testing.T) {
 func TestSlaveDiscovery(t *testing.T) {
 	stopC := make(chan struct{})
 	notifyC := make(chan *string)
-	m := newMaster(1234, notifyC, stopC, nil)
+	m := newMaster(nil, 1234, notifyC, stopC, nil)
 
 	pkgs := []heartbeatPackage{
 		{
@@ -324,7 +324,7 @@ func TestIntegrationTest_NoSlaveTimeout(t *testing.T) {
 	var mu1 sync.RWMutex
 	var mu2 sync.RWMutex
 	timeout_ids := make(map[int]struct{})
-	m := newMaster(rpcport, notifyC, stopC, func(id int) {
+	m := newMaster(nil, rpcport, notifyC, stopC, func(id int) {
 		mu1.Lock()
 		defer mu1.Unlock()
 		timeout_ids[id] = struct{}{}
@@ -346,7 +346,7 @@ func TestIntegrationTest_NoSlaveTimeout(t *testing.T) {
 	go func() {
 		for {
 			select {
-			case <-time.After(HeartbeatTimeout/2):
+			case <-time.After(HeartbeatTimeout / 2):
 				if time.Since(start) > 30*time.Second {
 					wg.Done()
 					return
@@ -390,7 +390,7 @@ func TestIntegrationTest_NoSlaveTimeout(t *testing.T) {
 			t.Errorf("RPC %s failed", rpcname)
 		}
 		// 检查 RPC reply 的 SlaveId 和 SlaveAddr 是否匹配.
-		if exp, got := fmt.Sprintf("10.0.0.%d", reply.SlaveId), reply.SlaveAddr; exp != got {
+		if exp, got := fmt.Sprintf("10.0.0.%d:10", reply.SlaveId), reply.SlaveAddr; exp != got {
 			t.Errorf("reply.SlaveAddr: expected %s, got %s", exp, got)
 		}
 
@@ -462,7 +462,7 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 	var mu1 sync.RWMutex
 	var mu2 sync.RWMutex
 	timeout_ids := make(map[int]struct{})
-	m := newMaster(rpcport, notifyC, stopC, func(id int) {
+	m := newMaster(nil, rpcport, notifyC, stopC, func(id int) {
 		mu1.Lock()
 		defer mu1.Unlock()
 		timeout_ids[id] = struct{}{}
@@ -485,7 +485,7 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 	go func() {
 		for {
 			select {
-			case <-time.After(HeartbeatTimeout/2):
+			case <-time.After(HeartbeatTimeout / 2):
 				if time.Since(start) > 30*time.Second {
 					wg.Done()
 					return
@@ -539,7 +539,7 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 			t.Errorf("RPC %s failed", rpcname)
 		}
 		// 检查 RPC reply 的 SlaveId 和 SlaveAddr 是否匹配.
-		if exp, got := fmt.Sprintf("10.0.0.%d", reply.SlaveId), reply.SlaveAddr; exp != got {
+		if exp, got := fmt.Sprintf("10.0.0.%d:10", reply.SlaveId), reply.SlaveAddr; exp != got {
 			t.Errorf("reply.SlaveAddr: expected %s, got %s", exp, got)
 		}
 
@@ -578,21 +578,23 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 	// 我们模拟了3个 influxdb data node: 1-101, 1-102, 1-103
 	// master 应该分配出3个 slave, 并将其记录在 activeSlaves; 后备节点还剩2个.
 	// 但是我们现在让 activeSlaves 中的一个 slave 心跳超时, master 就会将这个
-	// 超时的 slave 踢出, 然后从后备节点中选择一个将其取代, 保证 activeSlaves
-	// 数量不变
+	// 超时的 slave 踢出, 然后从后备节点中选择一个将其取代, 但是实际的文件拷贝动作
+	// 并未发生, 用于替代超时节点的那个后备节点上面并未存储文件, master 在收到它的
+	// 心跳包之后会认为它依然是后备节点, 所以 len(activeSlaves) == len(assignedSlaves)-1,
+	// len(backupSlaves) == 2
 	assignedSlaveIds := toSortedInts(assignedSlaves)
 	if len(assignedSlaveIds) != 3 {
 		t.Error("len(assignedSlaveIds) != 3")
 	}
 	activeSlaveIds := toSortedInts(m.activeSlaves)
-	if len(activeSlaveIds) != len(assignedSlaves) {
+	if len(activeSlaveIds) != len(assignedSlaves)-1 {
 		t.Errorf("len(activeSlaveIds) != len(assignedSlaves)")
 	}
 	if reflect.DeepEqual(activeSlaveIds, assignedSlaveIds) {
 		t.Errorf("activeSlaveIds %v == assignedSlaveIds %v", activeSlaveIds, assignedSlaveIds)
 	}
-	if len(m.backupSlaves) != 1 {
-		t.Errorf("len(m.backupSlaves) != 1")
+	if len(m.backupSlaves) != 2 {
+		t.Errorf("len(m.backupSlaves) != 2")
 	}
 
 	// 根据发送的心跳包 pkgs 来看, 每个文件都有3个副本, 并且应该存储在3个相同的 slave 上面

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"go.etcd.io/etcd/raft"
 	"log"
 	"net"
 	"net/http"
@@ -121,39 +122,46 @@ func (m *Master) processTimeoutSlave(id int) {
 	m.timeoutCallback(id)
 	m.kickoutTimeoutSlave(id)
 
+	// 如果超时 slave 节点上没有存储有文件, 说明它是后备节点, 尚未分配给 influxdb data node,
+	// 也就不需要额外的操作.
 	if len(m.slaveFileStore[id]) == 0 {
 		log.Printf("no files found in slave %d", id)
 		return
 	}
+	// kick out timeout slave id from slaveFileStore.
 	delete(m.slaveFileStore, id)
 
-	status := m.rc.node.Status()
-	if status.ID != status.Lead {
-		log.Printf("master %d is not a leader, shouldn't send cmd to slave", status.ID)
-		return
+	var status raft.Status
+	if m.rc != nil {
+		status = m.rc.node.Status()
+		if status.ID != status.Lead {
+			log.Printf("master %d is not a leader, shouldn't send cmd to slave", status.ID)
+			return
+		}
 	}
 
-	// 从 activeSlaves 中随机选择一个 slaveSrc, 从 backupSlaves 中随机
-	// 选择一个 slaveDst, 给 slaveDst 发送一个命令, 把其上的 TSM 发送到 slaveDst
+	// 从 activeSlaves 中随机选择一个 slaveSrc, 从 backupSlaves 中随机选择一个 slaveDst,
+	// 给 slaveDst 发送一个命令, 把其上的 TSM 发送到 slaveDst
 	slaveSrc := pickKey(m.activeSlaves)
 	slaveDst := pickKey(m.backupSlaves)
 	if slaveSrc == 0 || slaveDst == 0 {
 		log.Printf("WARNING: unable to find an available slave to replace the timeout one")
 		return
 	}
+	// slaveDst 将承担存储任务, 不再是后备节点了, 将其记录到 activeSlaves
 	delete(m.backupSlaves, slaveDst)
 	m.activeSlaves[slaveDst] = struct{}{}
 
 	for tag, slaveId := range m.node2slave {
 		if slaveId == id {
 			// tag 标识的 influxdb data node 上的 L2 TSM 原本是镜像到 slave id 上面,
-			// 现在 slave id 心跳超时而被踢出. 我们选择一个后备节点 slaveDst 用于替换 slave id
+			// 现在 slave id 心跳超时而被踢出. 我们选择后备节点 slaveDst 用于替换 slave id
 			m.node2slave[tag] = slaveDst
 		}
 	}
 
-	srcSlaveAddr := serverAddr(m.slaveHost[slaveSrc], m.slaveCmdPort[slaveSrc])
-	dstSlaveAddr := serverAddr(m.slaveHost[slaveDst], m.slavePort[slaveDst])
+	srcSlaveAddr := serverAddr(m.slaveHost[slaveSrc], m.slaveCmdPort[slaveSrc]) // for receiving cmd from master
+	dstSlaveAddr := serverAddr(m.slaveHost[slaveDst], m.slavePort[slaveDst])    // for receiving files from slaveSrc
 
 	go func() {
 		log.Printf("master %d sending cmd to [%d] %s: copy files to [%d] %s", status.ID, slaveSrc, srcSlaveAddr, slaveDst, dstSlaveAddr)
@@ -166,7 +174,7 @@ func (m *Master) processTimeoutSlave(id int) {
 
 		mustWrite(conn, []byte(dstSlaveAddr))
 		buf := make([]byte, 10)
-		n := mustRead(conn, buf)
+		n := mustRead(conn, buf) // waiting for response "OK"
 		if string(buf[:n]) != "OK" {
 			log.Printf("WARNING: unable to recv response from slave %s", srcSlaveAddr)
 			return
@@ -251,29 +259,7 @@ func newMaster(rc *raftNode, rpcport int, notifyC <-chan *string, stopC <-chan s
 				pkg.mustUnmarshal([]byte(*s))
 				// log.Printf("heartbeat from slave %d", pkg.SlaveId)
 
-				m.Lock()
-				m.slaveHost[pkg.SlaveId] = pkg.SlaveHost
-				m.slavePort[pkg.SlaveId] = pkg.SlavePort
-				m.slaveCmdPort[pkg.SlaveId] = pkg.SlaveCmdPort
-				m.slaveLastHeartbeat[pkg.SlaveId] = time.Now()
-
-				if len(pkg.FileStores) > 0 {
-					m.activeSlaves[pkg.SlaveId] = struct{}{}
-					delete(m.backupSlaves, pkg.SlaveId)
-				} else {
-					m.backupSlaves[pkg.SlaveId] = struct{}{}
-					delete(m.activeSlaves, pkg.SlaveId)
-				}
-
-				for _, fs := range pkg.FileStores {
-					m.putFileReplicaAddr(fs.Filename, pkg.SlaveId)
-					m.putSlaveFileStore(pkg.SlaveId, fs)
-
-					tag := nodeTag(fs.GroupId, fs.PeerId)
-					m.node2slave[tag] = pkg.SlaveId
-				}
-				// m.printFileReplicaAddr()
-				m.Unlock()
+				m.handleHeartbeat(pkg)
 			}
 			m.checkSlaveTimeout()
 		}
@@ -281,6 +267,39 @@ func newMaster(rc *raftNode, rpcport int, notifyC <-chan *string, stopC <-chan s
 
 	m.serve()
 	return m
+}
+
+func (m *Master) handleHeartbeat(pkg *heartbeatPackage) {
+	m.Lock()
+	defer m.Unlock()
+
+	m.slaveHost[pkg.SlaveId] = pkg.SlaveHost
+	m.slavePort[pkg.SlaveId] = pkg.SlavePort
+	m.slaveCmdPort[pkg.SlaveId] = pkg.SlaveCmdPort
+	m.slaveLastHeartbeat[pkg.SlaveId] = time.Now()
+
+	// 如果 slave 节点上存储有来自 influxdb Data node 的文件, 就将其记录到 activeSlave,
+	// 否则记录到 backupSlaves 用做后备节点.
+	if len(pkg.FileStores) > 0 {
+		m.activeSlaves[pkg.SlaveId] = struct{}{}
+		delete(m.backupSlaves, pkg.SlaveId)
+	} else {
+		m.backupSlaves[pkg.SlaveId] = struct{}{}
+		delete(m.activeSlaves, pkg.SlaveId)
+	}
+
+	for _, fs := range pkg.FileStores {
+		// 每个文件可能有若干副本, 需要记录每个文件的副本都存储在哪些 slave 节点上
+		m.putFileReplicaAddr(fs.Filename, pkg.SlaveId)
+
+		// 记录每个 slave 节点上存储的文件
+		m.putSlaveFileStore(pkg.SlaveId, fs)
+
+		// 每个 influxdb data node 都会被分配一个 slave 节点, 需要将这种对应关系记录到 node2slave
+		tag := nodeTag(fs.GroupId, fs.PeerId)
+		m.node2slave[tag] = pkg.SlaveId
+	}
+	// m.printFileReplicaAddr()
 }
 
 func (m *Master) putFileReplicaAddr(filename string, slaveId int) {
