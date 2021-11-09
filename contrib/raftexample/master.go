@@ -3,15 +3,17 @@ package main
 import (
 	"errors"
 	"fmt"
-	"go.etcd.io/etcd/raft"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"go.etcd.io/etcd/raft"
 )
 
 const (
@@ -41,6 +43,7 @@ type Master struct {
 
 func parseTmpFilename(tmpFilename string) (filename string, groudId int, peerId int) {
 	// xxx_<GID>_<PeerID>.yyy -> xxx_<GID>
+	tmpFilename = filepath.Base(tmpFilename)
 	toks1 := strings.Split(tmpFilename, ".") // toks1[0] = xxx_<GID>_<PeerID>, toks1[1] = yyy
 	toks2 := strings.Split(toks1[0], "_")    // toks2[0] = xxx, toks2[1] = <GID>, toks2[2] = <PeerID>
 	filename = toks2[0] + "." + toks1[1]
@@ -141,11 +144,13 @@ func (m *Master) processTimeoutSlave(id int) {
 	}
 
 	// 从 activeSlaves 中随机选择一个 slaveSrc, 从 backupSlaves 中随机选择一个 slaveDst,
-	// 给 slaveDst 发送一个命令, 把其上的 TSM 发送到 slaveDst
+	// 给 slaveSrc 发送一个命令, 把其上的 TSM 发送到 slaveDst
 	slaveSrc := pickKey(m.activeSlaves)
 	slaveDst := pickKey(m.backupSlaves)
 	if slaveSrc == 0 || slaveDst == 0 {
 		log.Printf("WARNING: unable to find an available slave to replace the timeout one")
+		log.Printf("         slaveSrc: %v, slaveDst: %v", slaveSrc, slaveDst)
+		log.Printf("         activeSlaves: %v, backupSlaves: %v", m.activeSlaves, m.backupSlaves)
 		return
 	}
 	// slaveDst 将承担存储任务, 不再是后备节点了, 将其记录到 activeSlaves
