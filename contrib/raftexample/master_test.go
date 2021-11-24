@@ -394,7 +394,7 @@ func TestIntegrationTest_NoSlaveTimeout(t *testing.T) {
 			t.Errorf("reply.SlaveAddr: expected %s, got %s", exp, got)
 		}
 
-		filename, groupId, peerId := parseTmpFilename(arg.Filename)
+		_, basename, groupId, peerId := parseFilename(arg.Filename)
 		tag := fmt.Sprintf("%d_%d", groupId, peerId) // tag 唯一标识一个 influxdb data node
 		// master 在响应 influxdb data node 的 AssignSlave RPC 后应该在 node2slave 里.
 		// 记录下它将哪个 slave 分配给了这个 influxdb data node
@@ -410,7 +410,7 @@ func TestIntegrationTest_NoSlaveTimeout(t *testing.T) {
 				pkgs[i].FileStores = append(pkgs[i].FileStores, FileStore{
 					GroupId:  groupId,
 					PeerId:   peerId,
-					Filename: filename,
+					Filename: basename,
 					Md5sum:   "", // empty for this test case
 				})
 			}
@@ -543,7 +543,7 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 			t.Errorf("reply.SlaveAddr: expected %s, got %s", exp, got)
 		}
 
-		filename, groupId, peerId := parseTmpFilename(arg.Filename)
+		_, basename, groupId, peerId := parseFilename(arg.Filename)
 		tag := fmt.Sprintf("%d_%d", groupId, peerId) // tag 唯一标识一个 influxdb data node
 		// master 在响应 influxdb data node 的 AssignSlave RPC 后应该在 node2slave 里.
 		// 记录下它将哪个 slave 分配给了这个 influxdb data node
@@ -559,7 +559,7 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 				pkgs[i].FileStores = append(pkgs[i].FileStores, FileStore{
 					GroupId:  groupId,
 					PeerId:   peerId,
-					Filename: filename,
+					Filename: basename,
 					Md5sum:   "", // empty for this test case
 				})
 			}

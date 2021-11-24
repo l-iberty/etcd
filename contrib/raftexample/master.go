@@ -41,12 +41,12 @@ type Master struct {
 	fileReplicaAddr map[string]map[int]struct{}
 }
 
-func parseTmpFilename(tmpFilename string) (filename string, groudId int, peerId int) {
-	// xxx_<GID>_<PeerID>.yyy -> xxx_<GID>
-	tmpFilename = filepath.Base(tmpFilename)
-	toks1 := strings.Split(tmpFilename, ".") // toks1[0] = xxx_<GID>_<PeerID>, toks1[1] = yyy
-	toks2 := strings.Split(toks1[0], "_")    // toks2[0] = xxx, toks2[1] = <GID>, toks2[2] = <PeerID>
-	filename = toks2[0] + "." + toks1[1]
+func parseFilename(filename string) (dir, basename string, groudId int, peerId int) {
+	dir = filepath.Dir(filename)
+	basename = filepath.Base(filename)
+	toks1 := strings.Split(basename, ".") // toks1[0] = xxx_<GID>_<PeerID>, toks1[1] = yyy
+	toks2 := strings.Split(toks1[0], "_") // toks2[0] = xxx, toks2[1] = <GID>, toks2[2] = <PeerID>
+	basename = toks2[0] + "." + toks1[1]  // basename = xxx.yyy
 	groudId, err := strconv.Atoi(toks2[1])
 	if err != nil {
 		panic(err)
@@ -62,14 +62,14 @@ func (m *Master) AssignSlave(arg *AssignSlaveArg, reply *AssignSlaveReply) error
 	m.Lock()
 	defer m.Unlock()
 
-	_, groupId, peerId := parseTmpFilename(arg.Filename)
+	_, _, groupId, peerId := parseFilename(arg.Filename)
 	tag := nodeTag(groupId, peerId)
 
 	// 是否有一个 slave 已经分配给 groupId-peerId 标识的 influxdb data node ?
 	var slaveId int
-	if _, ok := m.node2slave[tag]; ok {
+	if id, ok := m.node2slave[tag]; ok {
 		// 如果有的话就直接把这个 slave 分配出去
-		slaveId = m.node2slave[tag]
+		slaveId = id
 	} else {
 		// 如果没有的话就从后备节点中选择一个
 		for id := range m.backupSlaves {
