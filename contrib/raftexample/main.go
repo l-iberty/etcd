@@ -41,7 +41,8 @@ func main() {
 	rc, commitC, notifyC, errorC, snapshotterReady := newRaftNode(*id, strings.Split(*cluster, ","), *join, getSnapshot, proposeC, confChangeC)
 
 	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC)
-	newMaster(rc, *kvport+1, notifyC, stopC, func(int){})
+	m := NewMaster(rc, *kvport+1, notifyC, stopC, func(int) {})
+	m.Run()
 
 	// the key-value http handler will propose updates to raft
 	serveHttpKVAPI(kvs, *kvport, confChangeC, errorC)

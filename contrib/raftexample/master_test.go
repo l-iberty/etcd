@@ -43,11 +43,12 @@ func TestSlaveHeartbeatNoTimeout(t *testing.T) {
 	notifyC := make(chan *string)
 	var mu sync.Mutex
 	timeout_ids := make(map[int]struct{})
-	m := newMaster(nil, 1234, notifyC, stopC, func(id int) {
+	m := NewMaster(nil, 1234, notifyC, stopC, func(id int) {
 		mu.Lock()
 		defer mu.Unlock()
 		timeout_ids[id] = struct{}{}
 	})
+	m.Run()
 
 	pkgs := []heartbeatPackage{
 		{1, "10.0.0.1", 10, 20, nil},
@@ -102,11 +103,12 @@ func TestSlaveHeartbeatTimeout(t *testing.T) {
 	notifyC := make(chan *string)
 	var mu sync.Mutex
 	timeout_ids := make(map[int]struct{})
-	m := newMaster(nil, 1234, notifyC, stopC, func(id int) {
+	m := NewMaster(nil, 1234, notifyC, stopC, func(id int) {
 		mu.Lock()
 		defer mu.Unlock()
 		timeout_ids[id] = struct{}{}
 	})
+	m.Run()
 
 	pkgs := []heartbeatPackage{
 		{1, "10.0.0.1", 10, 20, nil},
@@ -182,7 +184,8 @@ func TestSlaveHeartbeatTimeout(t *testing.T) {
 func TestSlaveDiscovery(t *testing.T) {
 	stopC := make(chan struct{})
 	notifyC := make(chan *string)
-	m := newMaster(nil, 1234, notifyC, stopC, nil)
+	m := NewMaster(nil, 1234, notifyC, stopC, nil)
+	m.Run()
 
 	pkgs := []heartbeatPackage{
 		{
@@ -324,11 +327,12 @@ func TestIntegrationTest_NoSlaveTimeout(t *testing.T) {
 	var mu1 sync.RWMutex
 	var mu2 sync.RWMutex
 	timeout_ids := make(map[int]struct{})
-	m := newMaster(nil, rpcport, notifyC, stopC, func(id int) {
+	m := NewMaster(nil, rpcport, notifyC, stopC, func(id int) {
 		mu1.Lock()
 		defer mu1.Unlock()
 		timeout_ids[id] = struct{}{}
 	})
+	m.Run()
 
 	pkgs := []heartbeatPackage{
 		{1, "10.0.0.1", 10, 20, []FileStore{}},
@@ -462,11 +466,12 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 	var mu1 sync.RWMutex
 	var mu2 sync.RWMutex
 	timeout_ids := make(map[int]struct{})
-	m := newMaster(nil, rpcport, notifyC, stopC, func(id int) {
+	m := NewMaster(nil, rpcport, notifyC, stopC, func(id int) {
 		mu1.Lock()
 		defer mu1.Unlock()
 		timeout_ids[id] = struct{}{}
 	})
+	m.Run()
 
 	pkgs := []heartbeatPackage{
 		{1, "10.0.0.1", 10, 20, []FileStore{}},

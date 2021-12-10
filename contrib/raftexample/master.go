@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -90,6 +92,30 @@ func (m *Master) AssignSlave(arg *AssignSlaveArg, reply *AssignSlaveReply) error
 
 	reply.SlaveId = slaveId
 	reply.SlaveAddr = serverAddr(m.slaveHost[slaveId], m.slavePort[slaveId])
+	return nil
+}
+
+func (m *Master) GetRemoteNodeAddr(arg *GetRemoteNodeAddrArg, reply *GetRemoteNodeAddrReply) error {
+	m.RLock()
+	defer m.RUnlock()
+
+	tag := nodeTag(arg.GroupID, arg.PeerID)
+	slave := m.node2slave[tag]
+	host := m.slaveHost[slave]
+
+	file, err := os.OpenFile("remote_node_ports.json", os.O_RDONLY, 0664)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+
+	dec := json.NewDecoder(file)
+	data := make(map[string]int)
+	if err = dec.Decode(&data); err != nil {
+		return err
+	}
+	addr := fmt.Sprintf("%s:%d", host, data[strconv.Itoa(slave)])
+	reply.RemoteAddr = addr
 	return nil
 }
 
@@ -235,7 +261,7 @@ func (m *Master) printFileReplicaAddr() {
 	log.Printf("fileReplicaAddr: %v", fileReplicaAddr)
 }
 
-func newMaster(rc *raftNode, rpcport int, notifyC <-chan *string, stopC <-chan struct{}, timeoutCallback func(int)) *Master {
+func NewMaster(rc *raftNode, rpcport int, notifyC <-chan *string, stopC <-chan struct{}, timeoutCallback func(int)) *Master {
 	m := &Master{
 		rc:                 rc,
 		rpcport:            rpcport,
@@ -252,7 +278,10 @@ func newMaster(rc *raftNode, rpcport int, notifyC <-chan *string, stopC <-chan s
 		node2slave:         make(map[string]int),
 		fileReplicaAddr:    make(map[string]map[int]struct{}),
 	}
+	return m
+}
 
+func (m *Master) Run() {
 	go func() {
 		log.Printf("starting master")
 		for {
@@ -271,7 +300,6 @@ func newMaster(rc *raftNode, rpcport int, notifyC <-chan *string, stopC <-chan s
 	}()
 
 	m.serve()
-	return m
 }
 
 func (m *Master) handleHeartbeat(pkg *heartbeatPackage) {
