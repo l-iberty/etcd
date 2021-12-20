@@ -38,8 +38,42 @@ func toSortedInts(m map[int]struct{}) []int {
 	return a
 }
 
+func toSortedInts2(m map[int]int) []int {
+	a := []int{}
+	for x := range m {
+		a = append(a, x)
+	}
+	sort.Ints(a)
+	return a
+}
+
+func intersectedKeys1(a map[int]int, b []int) []int {
+	var res []int
+	for k := range a {
+		for i := range b {
+			if k == b[i] {
+				res = append(res, k)
+			}
+		}
+	}
+	return res
+}
+
+func intersectedKeys2(a map[int]struct{}, b []int) []int {
+	var res []int
+	for k := range a {
+		for i := range b {
+			if k == b[i] {
+				res = append(res, k)
+			}
+		}
+	}
+	return res
+}
+
 func TestSlaveHeartbeatNoTimeout(t *testing.T) {
 	stopC := make(chan struct{})
+	defer close(stopC)
 	notifyC := make(chan *string)
 	var mu sync.Mutex
 	timeout_ids := make(map[int]struct{})
@@ -78,7 +112,6 @@ func TestSlaveHeartbeatNoTimeout(t *testing.T) {
 	}()
 	wg.Wait()
 	log.Printf("*** stop sending heartbeats to master")
-	stopC <- struct{}{}
 
 	if len(timeout_ids) > 0 {
 		t.Errorf("no time-out slaves should be seen")
@@ -100,6 +133,7 @@ func TestSlaveHeartbeatNoTimeout(t *testing.T) {
 
 func TestSlaveHeartbeatTimeout(t *testing.T) {
 	stopC := make(chan struct{})
+	defer close(stopC)
 	notifyC := make(chan *string)
 	var mu sync.Mutex
 	timeout_ids := make(map[int]struct{})
@@ -147,7 +181,6 @@ func TestSlaveHeartbeatTimeout(t *testing.T) {
 	}()
 	wg.Wait()
 	log.Printf("*** stop sending heartbeats to master")
-	stopC <- struct{}{}
 
 	if len(timeout_ids) == 0 {
 		t.Fatalf("no time-out slaves found")
@@ -183,6 +216,7 @@ func TestSlaveHeartbeatTimeout(t *testing.T) {
 
 func TestSlaveDiscovery(t *testing.T) {
 	stopC := make(chan struct{})
+	defer close(stopC)
 	notifyC := make(chan *string)
 	m := NewMaster(nil, 1234, notifyC, stopC, nil)
 	m.Run()
@@ -278,14 +312,15 @@ func TestSlaveDiscovery(t *testing.T) {
 		}(p)
 	}
 	wg.Wait()
-	stopC <- struct{}{}
 
-	if exp, got := len(m.slaveHost), 4; exp != got {
+	time.Sleep(HeartbeatTimeout)
+
+	if exp, got := 4, len(m.slaveHost); exp != got {
 		t.Errorf("len(slaveHost) exp %v, got %v", exp, got)
 	}
 
 	for _, id := range []int{1, 2, 3, 4} {
-		if exp, got := m.slaveHost[id], fmt.Sprintf("10.0.0.%d:1234", id); exp != got {
+		if exp, got := fmt.Sprintf("10.0.0.%d:1234", id), m.slaveHost[id]; exp != got {
 			t.Errorf("host of slave-%d: exp %v, got %v", id, exp, got)
 		}
 		if len(m.slaveFileStore[id]) != len(pkgs[id-1].FileStores) {
@@ -323,6 +358,7 @@ func TestIntegrationTest_NoSlaveTimeout(t *testing.T) {
 	rpcname := "Master.AssignSlave"
 	rpcport := 1234
 	stopC := make(chan struct{})
+	defer close(stopC)
 	notifyC := make(chan *string)
 	var mu1 sync.RWMutex
 	var mu2 sync.RWMutex
@@ -424,7 +460,6 @@ func TestIntegrationTest_NoSlaveTimeout(t *testing.T) {
 
 	wg.Wait()
 	log.Printf("*** stop sending heartbeats to master")
-	stopC <- struct{}{}
 
 	if len(timeout_ids) > 0 {
 		t.Errorf("no time-out slaves should be seen")
@@ -436,7 +471,7 @@ func TestIntegrationTest_NoSlaveTimeout(t *testing.T) {
 	if len(assignedSlaveIds) != 3 {
 		t.Error("len(assignedSlaveIds) != 3")
 	}
-	activeSlaveIds := toSortedInts(m.activeSlaves)
+	activeSlaveIds := toSortedInts2(m.activeSlaves)
 	if !reflect.DeepEqual(activeSlaveIds, assignedSlaveIds) {
 		t.Errorf("activeSlaveIds %v != assignedSlaveIds %v", activeSlaveIds, assignedSlaveIds)
 	}
@@ -462,6 +497,7 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 	rpcname := "Master.AssignSlave"
 	rpcport := 1234
 	stopC := make(chan struct{})
+	defer close(stopC)
 	notifyC := make(chan *string)
 	var mu1 sync.RWMutex
 	var mu2 sync.RWMutex
@@ -496,7 +532,7 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 					return
 				}
 				if d := time.Since(start); d > 15*time.Second && len(m.activeSlaves) == 3 && timeout_id == 0 {
-					timeout_id = pickKey(m.activeSlaves)
+					timeout_id = pickKey2(m.activeSlaves)
 					if timeout_id != 0 {
 						log.Printf("*** timeout id: %d", timeout_id)
 					}
@@ -574,7 +610,6 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 
 	wg.Wait()
 	log.Printf("*** stop sending heartbeats to master")
-	stopC <- struct{}{}
 
 	if len(timeout_ids) != 1 {
 		t.Errorf("no time-out slaves found")
@@ -583,23 +618,20 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 	// 我们模拟了3个 influxdb data node: 1-101, 1-102, 1-103
 	// master 应该分配出3个 slave, 并将其记录在 activeSlaves; 后备节点还剩2个.
 	// 但是我们现在让 activeSlaves 中的一个 slave 心跳超时, master 就会将这个
-	// 超时的 slave 踢出, 然后从后备节点中选择一个将其取代, 但是实际的文件拷贝动作
-	// 并未发生, 用于替代超时节点的那个后备节点上面并未存储文件, master 在收到它的
-	// 心跳包之后会认为它依然是后备节点, 所以 len(activeSlaves) == len(assignedSlaves)-1,
-	// len(backupSlaves) == 2
+	// 超时的 slave 踢出, 然后从后备节点中选择一个将其取代
 	assignedSlaveIds := toSortedInts(assignedSlaves)
 	if len(assignedSlaveIds) != 3 {
 		t.Error("len(assignedSlaveIds) != 3")
 	}
-	activeSlaveIds := toSortedInts(m.activeSlaves)
-	if len(activeSlaveIds) != len(assignedSlaves)-1 {
+	activeSlaveIds := toSortedInts2(m.activeSlaves)
+	if len(activeSlaveIds) != len(assignedSlaves) {
 		t.Errorf("len(activeSlaveIds) != len(assignedSlaves)")
 	}
 	if reflect.DeepEqual(activeSlaveIds, assignedSlaveIds) {
 		t.Errorf("activeSlaveIds %v == assignedSlaveIds %v", activeSlaveIds, assignedSlaveIds)
 	}
-	if len(m.backupSlaves) != 2 {
-		t.Errorf("len(m.backupSlaves) != 2")
+	if len(m.backupSlaves) != 1 {
+		t.Errorf("len(m.backupSlaves) != 1")
 	}
 
 	// 根据发送的心跳包 pkgs 来看, 每个文件都有3个副本, 并且应该存储在3个相同的 slave 上面
@@ -609,4 +641,178 @@ func TestIntegrationTest_SlaveTimeout(t *testing.T) {
 			t.Errorf("timeout slave %d should not exist in fileReplicaAddr", timeout_id)
 		}
 	}
+}
+
+func TestConcurrentHeartbeatAndRPC(t *testing.T) {
+	rpcname := "Master.AssignSlave"
+	rpcport := 1234
+	stopC := make(chan struct{})
+	notifyC := make(chan *string)
+	m := NewMaster(nil, rpcport, notifyC, stopC, func(id int) {})
+	m.Run()
+
+	pkgs := []heartbeatPackage{
+		{1, "10.0.0.1", 10, 20, []FileStore{}},
+		{2, "10.0.0.2", 10, 20, []FileStore{}},
+		{3, "10.0.0.3", 10, 20, []FileStore{}},
+		{4, "10.0.0.4", 10, 20, []FileStore{}},
+		{5, "10.0.0.5", 10, 20, []FileStore{}},
+		{6, "10.0.0.6", 10, 20, []FileStore{}},
+	}
+	args1 := []AssignSlaveArg{
+		{Filename: "xxx_1_101.tsm"},
+		{Filename: "xxx_1_102.tsm"},
+		{Filename: "xxx_1_103.tsm"},
+	}
+	args2 := []AssignSlaveArg{
+		{Filename: "xxx_2_201.tsm"},
+		{Filename: "xxx_2_202.tsm"},
+		{Filename: "xxx_2_203.tsm"},
+	}
+
+	var mu sync.Mutex
+	id2addr := make(map[int]string)
+
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(1000 * time.Millisecond):
+				for _, p := range pkgs {
+					v := p.mustMarshal()
+					notifyC <- &v
+				}
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(1000 * time.Millisecond):
+				for _, arg := range args1 {
+					var reply AssignSlaveReply
+					if ok := call(rpcname, rpcport, &arg, &reply); !ok {
+						t.Fatal("RPC error")
+					}
+					mu.Lock()
+					id2addr[reply.SlaveId] = reply.SlaveAddr
+					mu.Unlock()
+				}
+			}
+		}
+	}()
+
+	time.Sleep(5 * time.Second)
+
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(1000 * time.Millisecond):
+				for _, arg := range args2 {
+					var reply AssignSlaveReply
+					if ok := call(rpcname, rpcport, &arg, &reply); !ok {
+						t.Fatal("RPC error")
+					}
+					mu.Lock()
+					id2addr[reply.SlaveId] = reply.SlaveAddr
+					mu.Unlock()
+				}
+			}
+		}
+	}()
+
+	time.Sleep(5 * time.Second)
+
+	// 心跳包 pkgs 来自 6 个 slaves, args1 和 args2 代表来自 6 个 data node 的 AssignSlave RPC 参数.
+	// master 应该把 6 个 slaves 全部分配出去, 不重不漏.
+	if len(id2addr) != len(pkgs) {
+		t.Error("Some slaves may be assigned to more than one data nodes")
+	}
+
+	close(done)
+}
+
+func TestSlaveTimeout(t *testing.T) {
+	rpcport := 1234
+	stopC := make(chan struct{})
+	notifyC := make(chan *string)
+	m := NewMaster(nil, rpcport, notifyC, stopC, func(id int) {})
+	m.Run()
+
+	pkgs := []heartbeatPackage{
+		{1, "10.0.0.1", 10, 20, []FileStore{{GroupId: 1, PeerId: 101, Filename: "xxx.tsm", Md5sum: "abcde"}}},
+		{2, "10.0.0.2", 10, 20, []FileStore{{GroupId: 1, PeerId: 102, Filename: "xxx.tsm", Md5sum: "abcde"}}},
+		{3, "10.0.0.3", 10, 20, []FileStore{{GroupId: 1, PeerId: 103, Filename: "xxx.tsm", Md5sum: "abcde"}}},
+		{4, "10.0.0.4", 10, 20, []FileStore{}},
+		{5, "10.0.0.5", 10, 20, []FileStore{}},
+		{6, "10.0.0.6", 10, 20, []FileStore{}},
+	}
+
+	n := len(pkgs)
+	var wg sync.WaitGroup
+	done := make([]chan struct{}, n)
+	for i := 0; i < n; i++ {
+		done[i] = make(chan struct{})
+		wg.Add(1)
+		go func(ii int) {
+			for {
+				select {
+				case <-done[ii]:
+					wg.Done()
+					return
+				case <-time.After(1000 * time.Millisecond):
+					v := pkgs[ii].mustMarshal()
+					notifyC <- &v
+				}
+			}
+		}(i)
+	}
+
+	time.Sleep(HeartbeatTimeout)
+
+	// 让一个存储有文件的 slave{1,2,3} 中的任意一个宕机, master 发现它心跳超时后
+	// 应该从 backupSlaves{4,5,6} 选择一个替补上去.
+	// 最后 activeSlaves 应包含 {4,5,6} 中的一个, backupSlaves 只剩两个, 且为 {4,5,6} 的子集
+	timeoutSlaveId := pickKey2(m.activeSlaves)
+	close(done[timeoutSlaveId-1])
+
+	// waiting for the timeout slave to be detected
+	time.Sleep(HeartbeatTimeout)
+
+	for i := 0; i < n; i++ {
+		if i == timeoutSlaveId-1 {
+			continue
+		}
+		close(done[i])
+	}
+
+	if exp, got := 3, len(m.activeSlaves); exp != got {
+		t.Errorf("len(m.activeSlaves) exp %d, got %v", exp, got)
+	}
+	if exp, got := 2, len(m.backupSlaves); exp != got {
+		t.Errorf("len(m.backupSlaves) exp %d, got %v", exp, got)
+	}
+
+	var res []int
+	res = intersectedKeys1(m.activeSlaves, []int{1, 2, 3})
+	if len(res) != 2 {
+		t.Errorf("activeSlaves: %v", m.activeSlaves)
+	}
+	res = intersectedKeys1(m.activeSlaves, []int{4, 5, 6})
+	if len(res) != 1 {
+		t.Errorf("activeSlaves: %v", m.activeSlaves)
+	}
+	res = intersectedKeys2(m.backupSlaves, []int{4, 5, 6})
+	if len(res) != 2 {
+		t.Errorf("backupSlaves: %v", m.backupSlaves)
+	}
+
+	wg.Wait()
 }

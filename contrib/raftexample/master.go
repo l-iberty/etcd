@@ -30,16 +30,16 @@ type Master struct {
 	stopC              <-chan struct{}
 	notifyC            <-chan *string
 	timeoutCallback    func(int)
-	slaveHost          map[int]string               // slave id -> host
-	slavePort          map[int]int                  // slave id -> port
-	slaveCmdPort       map[int]int                  // slave id -> cmd port
-	slaveFileStore     map[int]map[string]FileStore // slave id -> []FileStore (一个slave上面存储了多个文件)
-	slaveLastHeartbeat map[int]time.Time            // slave id -> last heartbeat time
-	activeSlaves       map[int]struct{}             // active slave ids, 活跃的slaves, 即被 AssignSlave 分配出去的slaves
-	backupSlaves       map[int]struct{}             // back-up slave ids, 后备slaves, 用于替换出故障(心跳超时)的slaves
-	node2slave         map[string]int               // influxdb data node -> slave id, key = data node 的标签: groupId-peerId
+	slaveHost          map[int]string               // slaveID -> host
+	slavePort          map[int]int                  // slaveID -> port
+	slaveCmdPort       map[int]int                  // slaveID -> cmd port
+	slaveFileStore     map[int]map[string]FileStore // slaveID -> []FileStore (一个slave上面存储了多个文件)
+	slaveLastHeartbeat map[int]time.Time            // slaveID -> last heartbeat time
+	activeSlaves       map[int]int                  // active slaveIDs, 活跃的slaves, 即被 AssignSlave 分配出去的slaves. key = slaveID, value = groupID (slave上存储的文件来自哪一个data node集群)
+	backupSlaves       map[int]struct{}             // back-up slaveIDs, 后备slaves, 用于替换出故障(心跳超时)的slaves
+	node2slave         map[string]int               // influxdb data node -> slaveID, key = data node 的标签: groupID-peerID
 
-	// 每个文件都会有3个副本, 来自 raft 集群, 分别存储在3个slave上, fileReplicaAddr记录了每个文件的3个副本的存储位置, 即 slave id
+	// 每个文件都会有3个副本, 来自 raft 集群, 分别存储在3个slave上, fileReplicaAddr记录了每个文件的3个副本的存储位置, 即 slaveID
 	fileReplicaAddr map[string]map[int]struct{}
 }
 
@@ -84,11 +84,9 @@ func (m *Master) AssignSlave(arg *AssignSlaveArg, reply *AssignSlaveReply) error
 		return errors.New("no available slaves")
 	}
 
-	// activeSlaves 用于记录被分配出去的 slave
-	m.activeSlaves[slaveId] = struct{}{}
+	m.activeSlaves[slaveId] = groupId
 
-	// slave 被分配出去后, 它就不能再被用作后备节点
-	delete(m.backupSlaves, slaveId)
+	delete(m.backupSlaves, slaveId) // slave 被分配出去后, 它就不能再被用做后备节点
 
 	reply.SlaveId = slaveId
 	reply.SlaveAddr = serverAddr(m.slaveHost[slaveId], m.slavePort[slaveId])
@@ -99,13 +97,15 @@ func (m *Master) GetRemoteNodeAddr(arg *GetRemoteNodeAddrArg, reply *GetRemoteNo
 	m.RLock()
 	defer m.RUnlock()
 
+	log.Printf("GetRemoteNodeAddr: node2slave %+v", m.node2slave)
+
 	tag := nodeTag(arg.GroupID, arg.PeerID)
 	slave := m.node2slave[tag]
 	host := m.slaveHost[slave]
 
 	file, err := os.OpenFile("remote_node_ports.json", os.O_RDONLY, 0664)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	defer file.Close()
 
@@ -114,8 +114,7 @@ func (m *Master) GetRemoteNodeAddr(arg *GetRemoteNodeAddrArg, reply *GetRemoteNo
 	if err = dec.Decode(&data); err != nil {
 		return err
 	}
-	addr := fmt.Sprintf("%s:%d", host, data[strconv.Itoa(slave)])
-	reply.RemoteAddr = addr
+	reply.RemoteAddr = fmt.Sprintf("%s:%d", host, data[strconv.Itoa(slave)])
 	return nil
 }
 
@@ -148,11 +147,11 @@ func (m *Master) checkSlaveTimeout() {
 }
 
 func (m *Master) processTimeoutSlave(id int) {
+	groupId := m.activeSlaves[id]
 	m.timeoutCallback(id)
 	m.kickoutTimeoutSlave(id)
 
-	// 如果超时 slave 节点上没有存储有文件, 说明它是后备节点, 尚未分配给 influxdb data node,
-	// 也就不需要额外的操作.
+	// 如果超时 slave 节点上没有存储有文件就不进行额外操作
 	if len(m.slaveFileStore[id]) == 0 {
 		log.Printf("no files found in slave %d", id)
 		return
@@ -171,7 +170,13 @@ func (m *Master) processTimeoutSlave(id int) {
 
 	// 从 activeSlaves 中随机选择一个 slaveSrc, 从 backupSlaves 中随机选择一个 slaveDst,
 	// 给 slaveSrc 发送一个命令, 把其上的 TSM 发送到 slaveDst
-	slaveSrc := pickKey(m.activeSlaves)
+	activeSlaves := make(map[int]struct{})
+	for i := range m.activeSlaves {
+		if m.activeSlaves[i] == groupId {
+			activeSlaves[i] = struct{}{}
+		}
+	}
+	slaveSrc := pickKey(activeSlaves)
 	slaveDst := pickKey(m.backupSlaves)
 	if slaveSrc == 0 || slaveDst == 0 {
 		log.Printf("WARNING: unable to find an available slave to replace the timeout one")
@@ -179,9 +184,9 @@ func (m *Master) processTimeoutSlave(id int) {
 		log.Printf("         activeSlaves: %v, backupSlaves: %v", m.activeSlaves, m.backupSlaves)
 		return
 	}
-	// slaveDst 将承担存储任务, 不再是后备节点了, 将其记录到 activeSlaves
+	// slaveDst 将承担存储任务, 不再是后备节点了, 将其记录到 activeSlaves 和 assignedSlaves
 	delete(m.backupSlaves, slaveDst)
-	m.activeSlaves[slaveDst] = struct{}{}
+	m.activeSlaves[slaveDst] = groupId
 
 	for tag, slaveId := range m.node2slave {
 		if slaveId == id {
@@ -190,6 +195,8 @@ func (m *Master) processTimeoutSlave(id int) {
 			m.node2slave[tag] = slaveDst
 		}
 	}
+
+	log.Printf("processTimeoutSlave: node2slave %+v", m.node2slave)
 
 	srcSlaveAddr := serverAddr(m.slaveHost[slaveSrc], m.slaveCmdPort[slaveSrc]) // for receiving cmd from master
 	dstSlaveAddr := serverAddr(m.slaveHost[slaveDst], m.slavePort[slaveDst])    // for receiving files from slaveSrc
@@ -203,8 +210,9 @@ func (m *Master) processTimeoutSlave(id int) {
 		}
 		defer conn.Close()
 
-		mustWrite(conn, []byte(dstSlaveAddr))
-		buf := make([]byte, 10)
+		data := fmt.Sprintf("%s#%s", dstSlaveAddr, m.slaveTag(slaveDst))
+		mustWrite(conn, []byte(data))
+		buf := make([]byte, 100)
 		n := mustRead(conn, buf) // waiting for response "OK"
 		if string(buf[:n]) != "OK" {
 			log.Printf("WARNING: unable to recv response from slave %s", srcSlaveAddr)
@@ -214,7 +222,23 @@ func (m *Master) processTimeoutSlave(id int) {
 	}()
 }
 
+func (m *Master) slaveTag(id int) string {
+	for tag, id2 := range m.node2slave {
+		if id == id2 {
+			return tag
+		}
+	}
+	panic("no slave found")
+}
+
 func pickKey(a map[int]struct{}) int {
+	for k := range a {
+		return k
+	}
+	return 0
+}
+
+func pickKey2(a map[int]int) int {
 	for k := range a {
 		return k
 	}
@@ -273,7 +297,7 @@ func NewMaster(rc *raftNode, rpcport int, notifyC <-chan *string, stopC <-chan s
 		slaveCmdPort:       make(map[int]int),
 		slaveFileStore:     make(map[int]map[string]FileStore),
 		slaveLastHeartbeat: make(map[int]time.Time),
-		activeSlaves:       make(map[int]struct{}),
+		activeSlaves:       make(map[int]int),
 		backupSlaves:       make(map[int]struct{}),
 		node2slave:         make(map[string]int),
 		fileReplicaAddr:    make(map[string]map[int]struct{}),
@@ -311,14 +335,15 @@ func (m *Master) handleHeartbeat(pkg *heartbeatPackage) {
 	m.slaveCmdPort[pkg.SlaveId] = pkg.SlaveCmdPort
 	m.slaveLastHeartbeat[pkg.SlaveId] = time.Now()
 
-	// 如果 slave 节点上存储有来自 influxdb Data node 的文件, 就将其记录到 activeSlave,
-	// 否则记录到 backupSlaves 用做后备节点.
+	// 如果 slave 节点上存储有来自 data node 的文件, 就将其记录到 activeSlave,
+	// 否则记录到 backupSlaves 用做后备节点——如果它未被 AssignSlave RPC 分配出去的话.
 	if len(pkg.FileStores) > 0 {
-		m.activeSlaves[pkg.SlaveId] = struct{}{}
+		m.activeSlaves[pkg.SlaveId] = pkg.FileStores[0].GroupId
 		delete(m.backupSlaves, pkg.SlaveId)
 	} else {
-		m.backupSlaves[pkg.SlaveId] = struct{}{}
-		delete(m.activeSlaves, pkg.SlaveId)
+		if _, ok := m.activeSlaves[pkg.SlaveId]; !ok {
+			m.backupSlaves[pkg.SlaveId] = struct{}{}
+		}
 	}
 
 	for _, fs := range pkg.FileStores {
@@ -328,7 +353,7 @@ func (m *Master) handleHeartbeat(pkg *heartbeatPackage) {
 		// 记录每个 slave 节点上存储的文件
 		m.putSlaveFileStore(pkg.SlaveId, fs)
 
-		// 每个 influxdb data node 都会被分配一个 slave 节点, 需要将这种对应关系记录到 node2slave
+		// 每个 data node 都会被分配一个 slave 节点, 需要将这种对应关系记录到 node2slave
 		tag := nodeTag(fs.GroupId, fs.PeerId)
 		m.node2slave[tag] = pkg.SlaveId
 	}
