@@ -136,10 +136,11 @@ func (m *Master) checkSlaveTimeout() {
 
 	for id := range m.slaveLastHeartbeat {
 		if time.Since(m.slaveLastHeartbeat[id]) > HeartbeatTimeout {
-			log.Printf("slave %d(%s) heartbeat timeout. Files:", id, m.slaveHost[id])
-			for _, fs := range m.slaveFileStore[id] {
-				log.Printf("    %s", fs)
-			}
+			log.Printf("slave %d(%s) heartbeat timeout", id, m.slaveHost[id])
+			// log.Printf("slave %d(%s) heartbeat timeout. Files:", id, m.slaveHost[id])
+			// for _, fs := range m.slaveFileStore[id] {
+			// 	log.Printf("    %s", fs)
+			// }
 
 			m.processTimeoutSlave(id)
 		}
@@ -201,7 +202,11 @@ func (m *Master) processTimeoutSlave(id int) {
 	srcSlaveAddr := serverAddr(m.slaveHost[slaveSrc], m.slaveCmdPort[slaveSrc]) // for receiving cmd from master
 	dstSlaveAddr := serverAddr(m.slaveHost[slaveDst], m.slavePort[slaveDst])    // for receiving files from slaveSrc
 
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+
 		log.Printf("master %d sending cmd to [%d] %s: copy files to [%d] %s", status.ID, slaveSrc, srcSlaveAddr, slaveDst, dstSlaveAddr)
 		conn, err := net.Dial("tcp", srcSlaveAddr)
 		if err != nil {
@@ -220,6 +225,7 @@ func (m *Master) processTimeoutSlave(id int) {
 		}
 		log.Printf("master %d DONE sending cmd to [%d] %s: copy files to [%d] %s", status.ID, slaveSrc, srcSlaveAddr, slaveDst, dstSlaveAddr)
 	}()
+	wg.Wait()
 }
 
 func (m *Master) slaveTag(id int) string {
